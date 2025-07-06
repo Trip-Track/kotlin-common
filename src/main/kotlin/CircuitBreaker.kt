@@ -12,6 +12,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import java.net.ConnectException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -22,11 +23,15 @@ class CircuitBreakerReject: RuntimeException("call rejected by Circuit Breaker")
 sealed interface State {
     suspend fun processRequest(path: String, params: Parameters)
 
-    suspend fun sendReq(httpClient: HttpClient, baseUrl: String, path: String, params: Parameters): HttpResponse {
-        return httpClient.get("${baseUrl}$path") {
-            url { parameters.appendAll(params) }
-            timeout { requestTimeoutMillis = 1_500 }
-        }
+    suspend fun sendReq(httpClient: HttpClient, baseUrl: String, path: String, params: Parameters): HttpResponse? {
+        return try {
+            httpClient.get("${baseUrl}$path") {
+                url { parameters.appendAll(params) }
+                timeout { requestTimeoutMillis = 1_500 }
+            }
+        } catch (e: HttpRequestTimeoutException) { null }
+        catch (e: ConnectException) { null }
+
     }
 
     class Closed(private val cb: CircuitBreaker): State {
@@ -36,9 +41,7 @@ sealed interface State {
         }
 
         override suspend fun processRequest(path: String, params: Parameters) {
-            val rsp: HttpResponse? = try {
-                sendReq(cb.http, cb.baseUrl, path, params)
-            } catch (e: HttpRequestTimeoutException) { null }
+            val rsp: HttpResponse? = sendReq(cb.http, cb.baseUrl, path, params)
 
             val now = System.currentTimeMillis()
             if ( now > failureCountExpiration.get() ) {
@@ -60,9 +63,7 @@ sealed interface State {
         override suspend fun processRequest(path: String, params: Parameters) {
 
             if ( System.currentTimeMillis() >= timerExpiration){
-                val rsp: HttpResponse? = try {
-                    sendReq(cb.http, cb.baseUrl, path, params)
-                } catch (e: HttpRequestTimeoutException) { null }
+                val rsp: HttpResponse? = sendReq(cb.http, cb.baseUrl, path, params)
 
                 if (rsp != null && rsp.status.isSuccess()) {
                     cb.changeState(this, HalfOpen(cb))
@@ -79,9 +80,7 @@ sealed interface State {
             cb.successCount.set(0)
         }
         override suspend fun processRequest(path: String, params: Parameters) {
-            val rsp: HttpResponse? = try {
-                sendReq(cb.http, cb.baseUrl, path, params)
-            } catch (e: HttpRequestTimeoutException) { null }
+            val rsp: HttpResponse? = sendReq(cb.http, cb.baseUrl, path, params)
 
             if (rsp != null && rsp.status.isSuccess()) {
                 if(cb.successCount.incrementAndGet() >= cb.halfOpenSuccThreshold){
