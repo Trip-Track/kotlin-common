@@ -1,7 +1,6 @@
 package swa.circuit_breaker
 
 import io.ktor.client.*
-import io.ktor.client.call.*
 import io.ktor.client.engine.java.Java
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
@@ -21,15 +20,20 @@ class CircuitBreakerReject: RuntimeException("call rejected by Circuit Breaker")
 
 
 sealed interface State {
-    suspend fun processRequest(path: String, params: Parameters)
+    suspend fun processRequest(path: String, params: Parameters): HttpResponse
 
-    suspend fun sendReq(httpClient: HttpClient, baseUrl: String, path: String, params: Parameters): HttpResponse? {
+    suspend fun sendReq(httpClient: HttpClient, baseUrl: String?, path: String, params: Parameters): HttpResponse? {
         return try {
             httpClient.get("${baseUrl}$path") {
-                url { parameters.appendAll(params) }
+                url { parameters.appendAll(params)
+                    println("${baseUrl}$path")
+                    println(url)
+                }
                 timeout { requestTimeoutMillis = 1_500 }
             }
-        } catch (e: HttpRequestTimeoutException) { null }
+        } catch (e: HttpRequestTimeoutException) {
+            null
+        }
         catch (e: ConnectException) { null }
 
     }
@@ -40,8 +44,8 @@ sealed interface State {
             cb.failureCount.set(0)
         }
 
-        override suspend fun processRequest(path: String, params: Parameters) {
-            val rsp: HttpResponse? = sendReq(cb.http, cb.baseUrl, path, params)
+        override suspend fun processRequest(path: String, params: Parameters): HttpResponse {
+            val rsp: HttpResponse? = sendReq(cb.http, cb.baseUrl(), path, params)
 
             val now = System.currentTimeMillis()
             if ( now > failureCountExpiration.get() ) {
@@ -49,7 +53,7 @@ sealed interface State {
                 failureCountExpiration.set(System.currentTimeMillis() + cb.resetTimeoutMs)
             }
 
-            if (rsp != null && rsp.status.isSuccess()) return rsp.body()
+            if (rsp != null && rsp.status.isSuccess()) return rsp
 
             if (cb.failureCount.incrementAndGet() >= cb.failThreshold) cb.changeState(this,Open(cb))
             throw CircuitBreakerReject()
@@ -60,14 +64,14 @@ sealed interface State {
     class Open(private val cb: CircuitBreaker): State {
         val timerExpiration = System.currentTimeMillis() + cb.resetTimeoutMs
 
-        override suspend fun processRequest(path: String, params: Parameters) {
+        override suspend fun processRequest(path: String, params: Parameters): HttpResponse {
 
             if ( System.currentTimeMillis() >= timerExpiration){
-                val rsp: HttpResponse? = sendReq(cb.http, cb.baseUrl, path, params)
+                val rsp: HttpResponse? = sendReq(cb.http, cb.baseUrl(), path, params)
 
                 if (rsp != null && rsp.status.isSuccess()) {
                     cb.changeState(this, HalfOpen(cb))
-                    return rsp.body()
+                    return rsp
                 }
             }
             throw CircuitBreakerReject()
@@ -79,14 +83,14 @@ sealed interface State {
         init {
             cb.successCount.set(0)
         }
-        override suspend fun processRequest(path: String, params: Parameters) {
-            val rsp: HttpResponse? = sendReq(cb.http, cb.baseUrl, path, params)
+        override suspend fun processRequest(path: String, params: Parameters): HttpResponse {
+            val rsp: HttpResponse? = sendReq(cb.http, cb.baseUrl(), path, params)
 
             if (rsp != null && rsp.status.isSuccess()) {
                 if(cb.successCount.incrementAndGet() >= cb.halfOpenSuccThreshold){
                     cb.changeState(this,Closed(cb))
                 }
-                return rsp.body()
+                return rsp
             }
             cb.changeState(this, Open(cb))
             throw CircuitBreakerReject()
@@ -96,10 +100,10 @@ sealed interface State {
 
 
 class CircuitBreaker(
-    val baseUrl: String = "localhost:4444",
     val failThreshold: Int = 4,
     val resetTimeoutMs: Long = 30_000,
-    val halfOpenSuccThreshold: Int = 5
+    val halfOpenSuccThreshold: Int = 5,
+    val baseUrl: suspend () -> String?
 ) {
 
     var failureCount = AtomicInteger(0)
@@ -112,7 +116,7 @@ class CircuitBreaker(
         expectSuccess = false
     }
 
-    suspend fun routeRequest(path: String, params: Parameters){
+    suspend fun routeRequest(path: String, params: Parameters): HttpResponse{
         while (true) {
             val current = state.get()
             try {
