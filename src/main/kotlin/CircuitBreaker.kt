@@ -148,7 +148,7 @@ class CircuitBreaker(
 
     fun changeState(expect: State, newState: State){
         if (state.compareAndSet(expect, newState)) {
-            logger.log.info("Changed state from $expect to $newState")
+            logger.log.info("CHANGED STATE FROM $expect to $newState")
         } else {
             logger.log.warn("Lost state change from $expect to $newState")
             throw StateChanged
