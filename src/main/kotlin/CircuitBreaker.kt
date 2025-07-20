@@ -18,8 +18,13 @@ import java.util.concurrent.atomic.AtomicReference
 
 class CircuitBreakerReject: RuntimeException("call rejected by Circuit Breaker")
 
+enum class CBState{
+    CLOSED, OPEN, HALF_OPEN
+}
 
 sealed interface State {
+    val type: CBState
+
     suspend fun processRequest(path: String, params: Parameters): HttpResponse
 
     suspend fun sendReq(httpClient: HttpClient, baseUrl: String?, path: String, params: Parameters): HttpResponse? {
@@ -35,10 +40,13 @@ sealed interface State {
             null
         }
         catch (e: ConnectException) { null }
+        catch (e: Exception) { throw e }
 
     }
 
     class Closed(private val cb: CircuitBreaker): State {
+        override val type = CBState.CLOSED
+
         private val failureCountExpiration = AtomicLong(System.currentTimeMillis() + cb.resetTimeoutMs)
         init {
             cb.failureCount.set(0)
@@ -62,6 +70,8 @@ sealed interface State {
 
 
     class Open(private val cb: CircuitBreaker): State {
+        override val type = CBState.OPEN
+
         val timerExpiration = System.currentTimeMillis() + cb.resetTimeoutMs
 
         override suspend fun processRequest(path: String, params: Parameters): HttpResponse {
@@ -80,6 +90,8 @@ sealed interface State {
 
 
     class HalfOpen(private val cb: CircuitBreaker): State {
+        override val type = CBState.HALF_OPEN
+
         init {
             cb.successCount.set(0)
         }
@@ -123,8 +135,12 @@ class CircuitBreaker(
             val current = state.get()
             try {
                 return current.processRequest(path, params)
-            } catch (x: StateChanged) {
-                logger.log.info("Route request to $path failed: $x")
+            } catch (e: StateChanged) {
+                logger.log.warn("Route request to $path failed: $e")
+
+            } catch (e: Exception){
+                logger.log.error("Route request to $path failed: $e")
+                throw e
             }
         }
 
