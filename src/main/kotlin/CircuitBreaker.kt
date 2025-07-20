@@ -100,11 +100,12 @@ sealed interface State {
 
 
 class CircuitBreaker(
-    val failThreshold: Int = 4,
-    val resetTimeoutMs: Long = 30_000,
-    val halfOpenSuccThreshold: Int = 5,
+    val failThreshold: Int = 2,
+    val resetTimeoutMs: Long = 10_000,
+    val halfOpenSuccThreshold: Int = 2,
     val baseUrl: suspend () -> String?
 ) {
+    val logger: Logger = Logger(this::class.simpleName!!)
 
     var failureCount = AtomicInteger(0)
     var successCount = AtomicInteger(0)
@@ -112,17 +113,18 @@ class CircuitBreaker(
 
     val http = HttpClient(Java) {
         install(ContentNegotiation) { json(Json) }
-        install(HttpTimeout) {requestTimeoutMillis = 3_000}
+        install(HttpTimeout) {requestTimeoutMillis = 1_500}
         expectSuccess = false
     }
 
     suspend fun routeRequest(path: String, params: Parameters): HttpResponse{
         while (true) {
+            logger.log.info("Routing request to $path")
             val current = state.get()
             try {
                 return current.processRequest(path, params)
             } catch (x: StateChanged) {
-
+                logger.log.info("Route request to $path failed: $x")
             }
         }
 
@@ -130,8 +132,9 @@ class CircuitBreaker(
 
     fun changeState(expect: State, newState: State){
         if (state.compareAndSet(expect, newState)) {
-
+            logger.log.info("Changed state from $expect to $newState")
         } else {
+            logger.log.warn("Lost state change from $expect to $newState")
             throw StateChanged
         }
     }
