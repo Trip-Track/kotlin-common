@@ -31,8 +31,6 @@ sealed interface State {
         return try {
             httpClient.get("${baseUrl}$path") {
                 url { parameters.appendAll(params)
-                    println("${baseUrl}$path")
-                    println(url)
                 }
                 timeout { requestTimeoutMillis = 1_500 }
             }
